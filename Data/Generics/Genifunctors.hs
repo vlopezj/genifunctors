@@ -42,13 +42,14 @@ import qualified Data.Map as M
 
 import Control.Exception(assert)
 import Data.Maybe
+import Data.Either
 
 type GenM = RWST Generator [Dec] (Map Name Name) Q
 
 data Generator = Generator
     { gen_combine   :: Name -> [Exp] -> Exp
     , gen_primitive :: Exp -> Exp
-    , gen_type      :: Name -> [Name] -> Q Type
+    , gen_type      :: Name -> [Either TyVarBndr Name] -> Q Type
     }
 
 gen :: Generator -> Name -> Q Exp
@@ -165,38 +166,62 @@ foldMapPrimitive = const (VarE 'mempty)
 traversePrimitive :: Exp -> Exp
 traversePrimitive e = VarE 'pure `AppE` e
 
-fmapType :: Name -> [Name] -> Q Type
-fmapType tc tvs = do
-    from <- mapM (newName . nameBase) tvs
-    to   <- mapM (newName . nameBase) tvs
-    return $ ForallT (map PlainTV (from ++ to)) []
-           $ foldr arr
-                (applyTyVars tc from `arr` applyTyVars tc to)
-                (zipWith arr (map VarT from) (map VarT to))
+rfrKinded :: Either TyVarBndr Name -> Q (Either TyVarBndr Name)
+rfrKinded v = case v of
+  Left x -> fmap Left$ case x of
+    (PlainTV a) -> PlainTV<$> newName (nameBase a)
+    (KindedTV a k) -> KindedTV<$> newName (nameBase a) <*> pure k
+  Right y -> pure$ Right y
 
-foldMapType :: Name -> [Name] -> Q Type
-foldMapType tc tvs = do
+rfrPlain :: Either TyVarBndr Name -> Q (Either TyVarBndr Name)
+rfrPlain v = case v of
+  Left x -> pure$ Left x
+  Right y -> fmap Right$ newName $ nameBase y
+
+varName :: Either TyVarBndr Name -> Name
+varName t = case t of
+  Right x -> x
+  Left (PlainTV a) -> a
+  Left (KindedTV a _) -> a
+
+fmapType :: Name -> [Either TyVarBndr Name] -> Q Type
+fmapType tc tvs' = do
+    tvs  <- mapM rfrKinded tvs'
+    from <- mapM rfrPlain tvs
+    to   <- mapM rfrPlain tvs
+    return $ ForallT (lefts from ++ (map PlainTV $ rights (from ++ to))) []
+           $ foldr arr
+                (applyTyVars tc (map varName from) `arr` applyTyVars tc (map varName to))
+                (zipWith arr (map VarT $ rights from) (map VarT $ rights to))
+    where
+
+foldMapType :: Name -> [Either TyVarBndr Name] -> Q Type
+foldMapType tc tvs' = do
     m <- newName "m"
-    from <- mapM (newName . nameBase) tvs
-    return $ ForallT (map PlainTV (m : from)) [ClassP ''Monoid [VarT m]]
+    tvs  <- mapM rfrKinded tvs'
+    from <- mapM rfrPlain tvs
+    return $ ForallT (lefts from ++ map PlainTV (m : rights from)) [ClassP ''Monoid [VarT m]]
            $ foldr arr
-                (applyTyVars tc from `arr` VarT m)
-                (zipWith arr (map VarT from) (repeat (VarT m)))
+                (applyTyVars tc (map varName from) `arr` VarT m)
+                (zipWith arr (map VarT$ rights from) (repeat (VarT m)))
 
-traverseType :: Name -> Name -> [Name] -> Q Type
-traverseType constraint_class tc tvs = do
+traverseType :: Name -> Name -> [Either TyVarBndr Name] -> Q Type
+traverseType constraint_class tc tvs' = do
     f <- newName "f"
-    from <- mapM (newName . nameBase) tvs
-    to   <- mapM (newName . nameBase) tvs
-    return $ ForallT (map PlainTV (f : from ++ to)) [ClassP constraint_class [VarT f]]
+    tvs  <- mapM rfrKinded tvs'
+    from <- mapM rfrPlain tvs
+    to   <- mapM rfrPlain tvs
+    return $ ForallT (lefts from ++ (map PlainTV (f: rights (from ++ to)))) [ClassP constraint_class [VarT f]]
            $ foldr arr
-                (applyTyVars tc from `arr` (VarT f `AppT` applyTyVars tc to))
-                (zipWith arr (map VarT from) (map (\ t -> VarT f `AppT` VarT t) to))
+                ((applyTyVars tc (map varName from)) `arr` (VarT f `AppT` applyTyVars tc (map varName to)))
+                (zipWith arr (map VarT $ rights from) (map (\ t -> VarT f `AppT` VarT t) $ rights to))
 
-genMatch :: Type -> [(Name,Name)] -> GenM Exp
-genMatch t tvfs = case t of
+genMatch :: Type -> [(Either TyVarBndr Name,Name)] -> GenM Exp
+genMatch t tvfs' =
+  let tvfs = [(varName a, b) | (a,b) <- tvfs'] in
+  case t of
     VarT a     | Just f <- lookup a tvfs -> return (VarE f)
-    AppT t1 t2 -> AppE <$> genMatch t1 tvfs <*> genMatch t2 tvfs
+    AppT t1 t2 -> AppE <$> genMatch t1 tvfs' <*> genMatch t2 tvfs'
     ConT tc    -> VarE <$> generate tc
     TupleT i   -> VarE <$> generate (tupleTypeName i)
     ListT      -> VarE <$> generate ''[]
@@ -207,7 +232,7 @@ simpCon con = case con of
     NormalC n ts   -> (n,map snd ts)
     RecC n vts     -> (n,map (\ (_,_,t) -> t) vts)
     InfixC t1 n t2 -> (n,[snd t1,snd t2])
-    ForallC{}      -> error "simpCon: ForallC"
+    ForallC _ _ con -> simpCon con
 
 
 generate :: Name -> GenM Name
@@ -222,7 +247,7 @@ generate tc = do
             fn <- q $ newName ("_" ++ nameBase tc)
             modify (M.insert tc fn)
             (tvs,cons) <- getTyConInfo tc
-            fs <- zipWithM (const . q . newName) (repeat "_f") tvs
+            fs <- zipWithM (const . q . newName) (repeat "_f") (rights tvs)
             x <- q $ newName "_x"
 
             body <- if null cons || null tvs
@@ -261,7 +286,7 @@ q = lift
 
 -- All the following functions are by Lennart in Geniplate
 
-getTyConInfo :: Name -> GenM ([Name], [Con])
+getTyConInfo :: Name -> GenM ([Either TyVarBndr Name], [Con])
 getTyConInfo con = do
     info <- q (reify con)
     case info of
@@ -270,8 +295,9 @@ getTyConInfo con = do
         PrimTyConI{} -> return ([], [])
         i -> error $ "unexpected TyCon: " ++ show i
   where
-    unPlainTv (PlainTV tv) = tv
-    unPlainTv i            = error $ "unexpected non-plain TV" ++ show i
+    unPlainTv (PlainTV tv) = Right tv
+    unPlainTv (KindedTV i StarT) = Right i
+    unPlainTv k@(KindedTV _ _) = Left k --  $ "unexpected non-plain TV" ++ show i
 
 expandSyn ::  Type -> Q Type
 expandSyn (ForallT tvs ctx t) = liftM (ForallT tvs ctx) $ expandSyn t

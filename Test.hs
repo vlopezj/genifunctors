@@ -1,4 +1,10 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE TemplateHaskell #-}
+#if __GLASGOW_HASKELL__ >= 706
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
+#endif
 module Main where
 
 import Data.Generics.Genifunctors
@@ -46,6 +52,17 @@ travVCustom = $(genTraverseT [(''U, 'travUCustom)] ''V)
 travW :: Applicative f => (a -> f a') -> (b -> f b') -> W a b -> f (W a' b')
 travW = $(genTraverse ''W)
 
+#if __GLASGOW_HASKELL__ >= 706
+fmapZ :: (a -> b) -> Z a i -> Z b i
+fmapZ = $(genFmap ''Z)
+ 
+foldZ :: (Monoid m) => (a -> m) -> Z a i -> m
+foldZ = $(genFoldMap ''Z)
+
+travZ :: Applicative f => (a -> f b) -> Z a i -> f (Z b i)
+travZ = $(genTraverse ''Z)
+#endif
+
 assertEq :: (Show a,Eq a) => a -> a -> IO ()
 assertEq a b | a == b = return ()
 assertEq a b = do
@@ -56,12 +73,15 @@ main :: IO ()
 main = do
     let v = L [0 :+: 1, M (X ((Right 5) :+: 4)), M (Z (2,3)), R 6 ""]
     assertEq (fmapU (+1) (+2) (+3) (+4) v) (L [1 :+: 1, M (X ((Right 9) :+: 4)), M (Z (3,5)), R 9 ""])
-    let s = (:[])
     assertEq (foldU s s s s v) ([0,5,2,3,6])
     assertEq (foldUCustom s s s s v) ([0,5,3,2,6])
-    let t = tell . s
     assertEq (execWriter (travU t t t t v)) ([0,5,2,3,6])
     assertEq (execWriter (travUCustom t t t t v)) ([0,5,3,2,6])
     assertEq (execWriter (travW t t (W 3))) [3]
-
+#if __GLASGOW_HASKELL__ >= 706
+    assertEq (execWriter (travZ t (A2 (2,3)))) [2,3]
+#endif
+  where
+    s = (:[])
+    t = tell . s
 
