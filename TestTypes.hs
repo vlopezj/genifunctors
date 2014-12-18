@@ -1,15 +1,12 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE KindSignatures #-}
-#if __GLASGOW_HASKELL__ >= 706
+#if __GLASGOW_HASKELL__ >= 708
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE TypeFamilies #-}
 #endif
 module TestTypes where
-
-#if __GLASGOW_HASKELL__ >= 706
-import GHC.TypeLits
-#endif
 
 data U a b c d
     = L [U a b c d]               -- polymorphic recursion
@@ -24,9 +21,20 @@ data V u v = X (U v v u u) | Z u
 data W (a :: *) b = W b
  deriving (Eq,Show)
 
-#if __GLASGOW_HASKELL__ >= 706
-data Z a (b :: Nat) where
-  A1 :: a       -> Z a 1
-  A2 :: (a,a)   -> Z a 2 
-  A3 :: (a,a,a) -> Z a 3 
+data family Sing (a :: k)
+data instance Sing (a :: Bool) where
+    SFalse :: Sing False
+    STrue  :: Sing True
+
+#if __GLASGOW_HASKELL__ >= 708
+data ZB a b (τ :: Bool) where
+  ZT :: a -> ZB a b True
+  ZF :: b -> ZB a b False
+
+data Z a (τ :: Bool) b where
+  A1 :: a       -> Z a False b
+  A2 :: (a,a)   -> Z a True  b 
+  A3 :: b       -> Z a False b
+--  AB :: ZB a Int τ -> Z a τ
+  AN :: Sing b -> [a] -> Z a b c
 #endif

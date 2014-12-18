@@ -43,6 +43,7 @@ import qualified Data.Map as M
 import Control.Exception(assert)
 import Data.Maybe
 import Data.Either
+import Data.List
 
 type GenM = RWST Generator [Dec] (Map Name Name) Q
 
@@ -181,9 +182,11 @@ rfrPlain v = case v of
 varName :: Either TyVarBndr Name -> Name
 varName t = case t of
   Right x -> x
-  Left (PlainTV a) -> a
-  Left (KindedTV a _) -> a
+  Left  x -> tyVarName x 
 
+tyVarName (PlainTV a) = a
+tyVarName (KindedTV a _) = a
+                           
 fmapType :: Name -> [Either TyVarBndr Name] -> Q Type
 fmapType tc tvs' = do
     tvs  <- mapM rfrKinded tvs'
@@ -216,16 +219,47 @@ traverseType constraint_class tc tvs' = do
                 ((applyTyVars tc (map varName from)) `arr` (VarT f `AppT` applyTyVars tc (map varName to)))
                 (zipWith arr (map VarT $ rights from) (map (\ t -> VarT f `AppT` VarT t) $ rights to))
 
-genMatch :: Type -> [(Either TyVarBndr Name,Name)] -> GenM Exp
-genMatch t tvfs' =
-  let tvfs = [(varName a, b) | (a,b) <- tvfs'] in
-  case t of
-    VarT a     | Just f <- lookup a tvfs -> return (VarE f)
-    AppT t1 t2 -> AppE <$> genMatch t1 tvfs' <*> genMatch t2 tvfs'
-    ConT tc    -> VarE <$> generate tc
-    TupleT i   -> VarE <$> generate (tupleTypeName i)
-    ListT      -> VarE <$> generate ''[]
-    _          -> error $ "genMatch:" ++ show t
+-- Type has kind *
+genMatch :: Type -> [(Name,Name)] -> GenM Exp
+genMatch t tvfs = do
+  let free = freeVarsType t
+  let tvs  = map fst tvfs
+  if any (`elem` tvs) free
+    then go t
+    else do
+      x <- q $ newName "_p"
+      Generator{..} <- ask
+      return$ LamE [VarP x]$ gen_primitive (VarE x)
+  where
+    go t = case t of
+      VarT a     | Just f <- lookup a tvfs -> return (VarE f)
+      AppT t1 t2 -> AppE <$> go t1  <*> go t2
+      ConT tc    -> VarE <$> generate tc
+      TupleT i   -> VarE <$> generate (tupleTypeName i)
+      ListT      -> VarE <$> generate ''[]
+      _          -> error $ "genMatch:" ++ show t
+
+  
+freeVarsType :: Type -> [Name]
+freeVarsType ty = go ty
+  where
+    go ty = case ty of
+      ForallT tyv _ ty  -> go ty \\ map tyVarName tyv
+      VarT n                      -> [n]
+      AppT t1 t2                  -> go t1 ++ go t2
+      SigT t _                    -> go t
+      ConT _                      -> []
+      PromotedT _                 -> []
+      TupleT _                    -> []
+      UnboxedTupleT _             -> []
+      ArrowT                      -> []
+      ListT                       -> []
+      PromotedTupleT _            -> []
+      PromotedNilT                -> []
+      PromotedConsT               -> []
+      StarT                       -> []
+      ConstraintT                 -> []
+      LitT _                      -> []
 
 simpCon :: Con -> (Name,[Type])
 simpCon con = case con of
@@ -259,7 +293,7 @@ generate tc = do
 
                         lhs <- gen_combine con_name <$> sequence
                                 [ do t' <- q (expandSyn t)
-                                     le <- genMatch t' (zip tvs fs)
+                                     le <- genMatch t' (zip (rights tvs) fs)
                                      return (le `AppE` VarE y)
                                 | (y,t) <- zip ys ts ]
 

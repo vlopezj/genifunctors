@@ -53,13 +53,13 @@ travW :: Applicative f => (a -> f a') -> (b -> f b') -> W a b -> f (W a' b')
 travW = $(genTraverse ''W)
 
 #if __GLASGOW_HASKELL__ >= 706
-fmapZ :: (a -> b) -> Z a i -> Z b i
+fmapZ :: (a -> b) -> (c -> d) -> Z a i c -> Z b i d
 fmapZ = $(genFmap ''Z)
  
-foldZ :: (Monoid m) => (a -> m) -> Z a i -> m
+foldZ :: (Monoid m) => (a -> m) -> (c -> m) -> Z a i c -> m
 foldZ = $(genFoldMap ''Z)
 
-travZ :: Applicative f => (a -> f b) -> Z a i -> f (Z b i)
+travZ :: Applicative f => (a -> f b) -> (c -> f d) -> Z a i c -> f (Z b i d)
 travZ = $(genTraverse ''Z)
 #endif
 
@@ -79,7 +79,8 @@ main = do
     assertEq (execWriter (travUCustom t t t t v)) ([0,5,3,2,6])
     assertEq (execWriter (travW t t (W 3))) [3]
 #if __GLASGOW_HASKELL__ >= 706
-    assertEq (execWriter (travZ t (A2 (2,3)))) [2,3]
+    assertEq (execWriter (travZ t t (A2 (2,3)))) [2,3]
+    assertEq (execWriter (travZ t t (AN STrue [2,3,4,5]))) [2,3,4,5]
 #endif
   where
     s = (:[])
