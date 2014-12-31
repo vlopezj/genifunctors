@@ -41,4 +41,7 @@ data Z a (τ :: Bool) b where
   AN :: Sing τ -> [a] -> Z a τ c
   AS :: Z a True b -> Z a True b
   AF :: Z a True x -> Z a True b
+
+data ZU f a where
+  ZU :: f Int -> a -> ZU f a
 #endif

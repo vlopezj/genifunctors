@@ -61,6 +61,15 @@ foldZ = $(genFoldMap ''Z)
 
 travZ :: Applicative f => (a -> f b) -> (c -> f d) -> Z a i c -> f (Z b i d)
 travZ = $(genTraverse ''Z)
+
+fmapZU :: (a -> b) -> ZU f a -> ZU f b
+fmapZU = $(genFmap ''ZU)
+
+foldZU :: (Monoid m) => (a -> m) -> ZU f a -> m
+foldZU = $(genFoldMap ''ZU)
+
+travZU :: Applicative g => (a -> g b) -> ZU f a -> g (ZU f b)
+travZU = $(genTraverse ''ZU)
 #endif
 
 assertEq :: (Show a,Eq a) => a -> a -> IO ()
@@ -83,6 +92,7 @@ main = do
     assertEq (execWriter (travZ t t (AB (ZT 1)))) [1]
     assertEq (execWriter (travZ t t (AB (ZF "a")))) []
     assertEq (execWriter (travZ t t (AS (A2 (1,1))))) [1,1]
+    assertEq (execWriter (travZU t  (ZU (Just 2) 1))) [1]
     assertEq (execWriter (travZ t t (AN STrue [2,3,4,5]))) [2,3,4,5]
 #endif
   where
