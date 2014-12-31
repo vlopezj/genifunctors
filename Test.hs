@@ -80,6 +80,9 @@ main = do
     assertEq (execWriter (travW t t (W 3))) [3]
 #if __GLASGOW_HASKELL__ >= 706
     assertEq (execWriter (travZ t t (A2 (2,3)))) [2,3]
+    assertEq (execWriter (travZ t t (AB (ZT 1)))) [1]
+    assertEq (execWriter (travZ t t (AB (ZF "a")))) []
+    assertEq (execWriter (travZ t t (AS (A2 (1,1))))) [1,1]
     assertEq (execWriter (travZ t t (AN STrue [2,3,4,5]))) [2,3,4,5]
 #endif
   where

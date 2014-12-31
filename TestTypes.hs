@@ -1,5 +1,6 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE RankNTypes #-}
 #if __GLASGOW_HASKELL__ >= 708
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE DataKinds #-}
@@ -30,11 +31,14 @@ data instance Sing (a :: Bool) where
 data ZB a b (τ :: Bool) where
   ZT :: a -> ZB a b True
   ZF :: b -> ZB a b False
+  ZR :: ZB a b τ -> ZB a b τ
 
 data Z a (τ :: Bool) b where
   A1 :: a       -> Z a False b
   A2 :: (a,a)   -> Z a True  b 
   A3 :: b       -> Z a False b
---  AB :: ZB a Int τ -> Z a τ
-  AN :: Sing b -> [a] -> Z a b c
+  AB :: ZB a String τ -> Z b τ a
+  AN :: Sing τ -> [a] -> Z a τ c
+  AS :: Z a True b -> Z a True b
+  AF :: Z a True x -> Z a True b
 #endif

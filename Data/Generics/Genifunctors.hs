@@ -48,9 +48,10 @@ import Data.List
 type GenM = RWST Generator [Dec] (Map Name Name) Q
 
 data Generator = Generator
-    { gen_combine   :: Name -> [Exp] -> Exp
-    , gen_primitive :: Exp -> Exp
-    , gen_type      :: Name -> [Either TyVarBndr Name] -> Q Type
+    { gen_combine    :: Name -> [Exp] -> Exp
+    , gen_primitive  :: Exp -> Exp
+    , gen_type       :: Name -> [Either TyVarBndr Name] -> Q Type
+    , gen_type_inner :: Name -> [Either TyVarBndr Name] -> Q Type
     }
 
 gen :: Generator -> Name -> Q Exp
@@ -78,6 +79,7 @@ genFmap = gen Generator
     { gen_combine   = fmapCombine
     , gen_primitive = fmapPrimitive
     , gen_type      = fmapType
+    , gen_type_inner = fmapTypeInner
     }
 
 -- | Generate generalized 'foldMap' for a type
@@ -100,10 +102,12 @@ genFoldMap = genFoldMapT []
 --foldUCustom = $(genFoldMapT [(''(,), 'foldTupleRev)] ''U)
 -- @
 genFoldMapT :: [(Name,Name)] -> Name -> Q Exp
-genFoldMapT = genT Generator
+genFoldMapT = do
+  genT Generator
     { gen_combine   = foldMapCombine
     , gen_primitive = foldMapPrimitive
     , gen_type      = foldMapType
+    , gen_type_inner = foldMapTypeInner
     }
 
 -- | Generate generalized 'traversable' for a type
@@ -133,6 +137,7 @@ genTraverseT = genT Generator
     { gen_combine   = traverseCombine
     , gen_primitive = traversePrimitive
     , gen_type      = traverseType ''Applicative
+    , gen_type_inner = traverseTypeInner ''Applicative
     }
 
 fmapCombine :: Name -> [Exp] -> Exp
@@ -196,7 +201,23 @@ fmapType tc tvs' = do
            $ foldr arr
                 (applyTyVars tc (map varName from) `arr` applyTyVars tc (map varName to))
                 (zipWith arr (map VarT $ rights from) (map VarT $ rights to))
-    where
+
+fmapTypeInner :: Name -> [Either TyVarBndr Name] -> Q Type
+fmapTypeInner tc tvs' = do
+    tvs  <- mapM rfrKinded tvs'
+
+    ignore <- mapM rfrKinded tvs'
+
+    from <- mapM rfrPlain tvs
+    to   <- mapM rfrPlain tvs
+
+    return $ ForallT (lefts from ++ (map PlainTV $ rights (from ++ to)) ++ [PlainTV (tyVarName i) | i <- lefts ignore]) []
+           $ foldr arr
+                (applyTyVars tc (map varName from) `arr` applyTyVars tc (map varName to))
+                [ case (i,a,b) of
+                     (Right _, Right a, Right b) -> VarT a `arr` VarT b
+                     (Left  v, _      , _      ) -> VarT (tyVarName v) `arr` VarT (tyVarName v)
+                | (i, a, b) <- zip3 ignore from to ]
 
 foldMapType :: Name -> [Either TyVarBndr Name] -> Q Type
 foldMapType tc tvs' = do
@@ -207,6 +228,21 @@ foldMapType tc tvs' = do
            $ foldr arr
                 (applyTyVars tc (map varName from) `arr` VarT m)
                 (zipWith arr (map VarT$ rights from) (repeat (VarT m)))
+
+
+foldMapTypeInner :: Name -> [Either TyVarBndr Name] -> Q Type
+foldMapTypeInner tc tvs' = do
+    m <- newName "m"
+    tvs  <- mapM rfrKinded tvs'
+    ignore <- mapM rfrKinded tvs'
+    from <- mapM rfrPlain tvs
+    return $ ForallT (lefts from ++ map PlainTV (m : rights from) ++ [PlainTV (tyVarName i) | i <- lefts ignore]) [ClassP ''Monoid [VarT m]]
+           $ foldr arr
+                (applyTyVars tc (map varName from) `arr` VarT m)
+                [ case (i,a) of
+                     (Right _, Right a) -> VarT a `arr` VarT m
+                     (Left  v, _      ) -> VarT (tyVarName v) `arr` VarT m
+                | (i, a) <- zip ignore from ]
 
 traverseType :: Name -> Name -> [Either TyVarBndr Name] -> Q Type
 traverseType constraint_class tc tvs' = do
@@ -219,27 +255,56 @@ traverseType constraint_class tc tvs' = do
                 ((applyTyVars tc (map varName from)) `arr` (VarT f `AppT` applyTyVars tc (map varName to)))
                 (zipWith arr (map VarT $ rights from) (map (\ t -> VarT f `AppT` VarT t) $ rights to))
 
--- Type has kind *
-genMatch :: Type -> [(Name,Name)] -> GenM Exp
-genMatch t tvfs = do
-  let free = freeVarsType t
-  let tvs  = map fst tvfs
-  if any (`elem` tvs) free
-    then go t
-    else do
-      x <- q $ newName "_p"
-      Generator{..} <- ask
-      return$ LamE [VarP x]$ gen_primitive (VarE x)
-  where
-    go t = case t of
-      VarT a     | Just f <- lookup a tvfs -> return (VarE f)
-      AppT t1 t2 -> AppE <$> go t1  <*> go t2
-      ConT tc    -> VarE <$> generate tc
-      TupleT i   -> VarE <$> generate (tupleTypeName i)
-      ListT      -> VarE <$> generate ''[]
-      _          -> error $ "genMatch:" ++ show t
+traverseTypeInner :: Name -> Name -> [Either TyVarBndr Name] -> Q Type
+traverseTypeInner constraint_class tc tvs' = do
+    f <- newName "f"
+    tvs  <- mapM rfrKinded tvs'
+    ignore <- mapM rfrKinded tvs'
+    from <- mapM rfrPlain tvs
+    to   <- mapM rfrPlain tvs
+    return $ ForallT (lefts from ++ (map PlainTV (f: rights (from ++ to))) ++ [PlainTV (tyVarName i) | i <- lefts ignore])
+      [ClassP constraint_class [VarT f]]
+           $ foldr arr
+                ((applyTyVars tc (map varName from)) `arr` (VarT f `AppT` applyTyVars tc (map varName to)))
+                [ case (i,a,b) of
+                     (Right _, Right a, Right b) -> VarT a `arr` (VarT f `AppT` VarT b)
+                     (Left  v, _      , _      ) -> VarT (tyVarName v) `arr` (VarT f `AppT` VarT (tyVarName v))
+                | (i, a, b) <- zip3 ignore from to ]
 
-  
+-- Type has kind *
+genMatch :: Type -> [(Name, (Either TyVarBndr Name, Name))] -> GenM Exp
+genMatch t tvfs = do
+    Generator{..} <- ask
+    let
+        tvn  = [n | (_,(Right n, v)) <- tvfs]
+
+        -- | Avoid generating traversals for types that don't mention
+        --   any of the given variables.
+        --   This both reduce code size, and avoids crashing on some
+        --   incompatible type constructors (e.g. family instances)
+        go0 :: Type -> GenM Exp
+        go0 t =
+          let free = freeVarsType t in
+          if any (`elem` tvn) free then go t
+          else genPrimitive
+
+        go :: Type -> GenM Exp
+        go t = case t of
+          VarT a     | Just (_,f) <- lookup a tvfs -> return$ VarE f
+          AppT t1 t2 -> AppE <$> go t1 <*> go0 t2
+          ConT tc    -> VarE <$> generate' tc
+          TupleT i   -> VarE <$> generate' (tupleTypeName i)
+          ListT      -> VarE <$> generate' ''[]
+          _          -> error $ "genMatch:go:" ++ show t
+
+    go0 t
+
+genPrimitive :: GenM Exp
+genPrimitive = do
+  Generator{..} <- ask
+  x <- q $ newName "x"
+  return (LamE [VarP x] (gen_primitive $ VarE x))
+
 freeVarsType :: Type -> [Name]
 freeVarsType ty = go ty
   where
@@ -268,9 +333,28 @@ simpCon con = case con of
     InfixC t1 n t2 -> (n,[snd t1,snd t2])
     ForallC _ _ con -> simpCon con
 
-
 generate :: Name -> GenM Name
 generate tc = do
+  Generator{..} <- ask
+
+  fn0 <- generate' tc
+  fn <- q $ newName ("_" ++ nameBase tc)
+  (tvs,_) <- getTyConInfo tc
+  ty <- q $ gen_type tc tvs
+  fs <- zipWithM (const . q . newName) (repeat "_f") tvs
+  primitive <- genPrimitive
+  tell
+    [ SigD fn ty
+    , FunD fn [ Clause (map VarP [ f | (f,Right _) <- zip fs tvs ])
+                       (NormalB (foldl AppE (VarE fn0) [ case v of
+                                                            Right _ -> VarE f
+                                                            Left  _ -> primitive
+                                                 | (f,v) <- zip fs tvs ]))
+                       []]]
+  return fn
+
+generate' :: Name -> GenM Name
+generate' tc = do
     m_fn <- gets (M.lookup tc)
     case m_fn of
         Just fn -> return fn
@@ -281,7 +365,7 @@ generate tc = do
             fn <- q $ newName ("_" ++ nameBase tc)
             modify (M.insert tc fn)
             (tvs,cons) <- getTyConInfo tc
-            fs <- zipWithM (const . q . newName) (repeat "_f") (rights tvs)
+            fs <- zipWithM (const . q . newName) (repeat "_f") tvs
             x <- q $ newName "_x"
 
             body <- if null cons || null tvs
@@ -293,7 +377,7 @@ generate tc = do
 
                         lhs <- gen_combine con_name <$> sequence
                                 [ do t' <- q (expandSyn t)
-                                     le <- genMatch t' (zip (rights tvs) fs)
+                                     le <- genMatch t' [(varName v, (v,f)) | (v, f) <- zip tvs fs]
                                      return (le `AppE` VarE y)
                                 | (y,t) <- zip ys ts ]
 
@@ -301,7 +385,7 @@ generate tc = do
 
                     return (CaseE (VarE x) matches)
 
-            ty <- q $ gen_type tc tvs
+            ty <- q $ gen_type_inner tc tvs
 
             tell
                 [ SigD fn ty
